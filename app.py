@@ -6,9 +6,10 @@ import math
 import re
 import random
 import requests
+import shutil # [NEW] 시스템 경로 찾기용
 
 # 화면 설정
-st.set_page_config(page_title="AI 맛집 랭킹 (Cloud)", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="AI 맛집 랭킹 (Cloud Fix)", page_icon="☁️", layout="wide")
 
 from streamlit_folium import st_folium
 import folium
@@ -50,7 +51,6 @@ def get_lat_lon(address):
 
 class RecommendationEngine:
     def __init__(self):
-        # 중요 요소별 키워드
         self.priority_keywords = {
             "맛 (기본)": ["존맛", "맛집", "맛있", "최고", "인생"],
             "가성비": ["가성비", "저렴", "착한", "가격", "양 많", "무한리필"],
@@ -61,22 +61,17 @@ class RecommendationEngine:
         }
 
     def calculate_score(self, row, user_priority):
-        # 데이터 안전 처리
         try: visitor = int(row['visitor_reviews'])
         except: visitor = 0
         try: blog = int(row['blog_reviews'])
         except: blog = 0
         
-        # 1. 기본 점수 (리뷰 수 기반)
         total_reviews = visitor + blog
         base_score = math.log(total_reviews + 1) * 10
-        
-        # 2. 매칭 점수
         match_score = 0
         tags = str(row['tags'])
         matched_tags = []
         
-        # 선택한 우선순위 키워드가 태그에 있는지 확인
         target_keywords = self.priority_keywords.get(user_priority, [])
         for keyword in target_keywords:
             if keyword in tags:
@@ -84,14 +79,11 @@ class RecommendationEngine:
                 matched_tags.append(f"#{keyword}")
 
         final_score = int(base_score + match_score)
-        
-        # 중복 제거
         matched_tags = list(set(matched_tags))
-        
         return final_score, matched_tags, total_reviews
 
 # ==========================================
-# 2. 데이터 수집기 (클라우드 최적화)
+# 2. 데이터 수집기 (서버 환경 최적화)
 # ==========================================
 
 def clean_menu_text(name_raw, price_raw):
@@ -108,29 +100,41 @@ def clean_menu_text(name_raw, price_raw):
 
 def collect_data_to_csv(location, category, max_items):
     options = Options()
-    
-    # [클라우드 필수] 헤드리스 모드 (화면 없음)
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
-    
-    # 사람인 척 속이기
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     
-    # 이미지 차단
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
 
     try:
-        # 클라우드 자동 설치
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
+        # [핵심 수정] 서버 환경(Linux)인지 로컬(Windows)인지 판단하여 드라이버 경로 설정
+        
+        # 1. 리눅스 서버 (Streamlit Cloud) 확인
+        # shutil.which("chromium-driver")가 경로를 반환하면 서버임
+        system_driver_path = shutil.which("chromium-driver") or shutil.which("chromedriver")
+        
+        if system_driver_path and "/usr/bin" in system_driver_path:
+            # 서버에 설치된 시스템 드라이버 사용 (버전 충돌 방지)
+            service = Service(system_driver_path)
+            driver = webdriver.Chrome(service=service, options=options)
+            
+        # 2. 로컬 윈도우 (내 컴퓨터)
+        elif os.path.exists("chromedriver.exe"):
+            service = Service("chromedriver.exe")
+            driver = webdriver.Chrome(service=service, options=options)
+            
+        # 3. 그 외 (자동 설치 시도)
+        else:
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+            
     except Exception as e:
-        return f"🚨 드라이버 오류: {e}"
+        return f"🚨 드라이버 오류 발생: {e}"
 
     wait = WebDriverWait(driver, 20)
     
@@ -159,7 +163,6 @@ def collect_data_to_csv(location, category, max_items):
         except Exception as e:
             return f"❌ 검색 오류: {e}"
 
-        # 프레임 진입 재시도
         frame_found = False
         for _ in range(3):
             try:
@@ -175,7 +178,6 @@ def collect_data_to_csv(location, category, max_items):
         if not frame_found:
             return "❌ 목록을 찾을 수 없습니다. (서버 차단 또는 로딩 실패)"
 
-        # 스크롤
         for _ in range(int(max_items / 5) + 2):
             driver.execute_script("window.scrollBy(0, 10000);")
             time.sleep(0.5)
@@ -406,14 +408,10 @@ else:
         
         st.divider()
 
-        # 정렬 적용
-        # 1. 랭킹순(추천): 우선순위를 주지 않았으므로 '맛(기본)' 가중치 사용
-        # 2. 가격순: min_price 기준 정렬
         engine = RecommendationEngine()
         results = []
         for index, row in df.iterrows():
-            # 사용자가 우선순위를 고르는 UI가 사라졌으므로, 
-            # '맛 (기본)'을 default로 하여 점수 계산
+            # 중요: 우선순위 UI가 없으므로 '맛 (기본)'을 고정값으로 사용
             score, matched_tags, total = engine.calculate_score(row, "맛 (기본)")
             item = row.to_dict()
             item['final_score'] = score
