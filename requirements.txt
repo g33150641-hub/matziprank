@@ -1,0 +1,8 @@
+streamlit
+pandas
+selenium
+webdriver-manager
+folium
+streamlit-folium
+geopy
+requests
