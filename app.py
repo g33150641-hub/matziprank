@@ -6,7 +6,7 @@ import math
 import re
 import random
 import requests
-import shutil # [NEW] 시스템 경로 찾기용
+import shutil 
 
 # 화면 설정
 st.set_page_config(page_title="AI 맛집 랭킹 (Cloud Fix)", page_icon="☁️", layout="wide")
@@ -83,7 +83,7 @@ class RecommendationEngine:
         return final_score, matched_tags, total_reviews
 
 # ==========================================
-# 2. 데이터 수집기 (서버 환경 최적화)
+# 2. 데이터 수집기 (드라이버 경로 강제 지정)
 # ==========================================
 
 def clean_menu_text(name_raw, price_raw):
@@ -100,6 +100,7 @@ def clean_menu_text(name_raw, price_raw):
 
 def collect_data_to_csv(location, category, max_items):
     options = Options()
+    # [클라우드 필수 설정]
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -111,30 +112,39 @@ def collect_data_to_csv(location, category, max_items):
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
 
-    try:
-        # [핵심 수정] 서버 환경(Linux)인지 로컬(Windows)인지 판단하여 드라이버 경로 설정
-        
-        # 1. 리눅스 서버 (Streamlit Cloud) 확인
-        # shutil.which("chromium-driver")가 경로를 반환하면 서버임
-        system_driver_path = shutil.which("chromium-driver") or shutil.which("chromedriver")
-        
-        if system_driver_path and "/usr/bin" in system_driver_path:
-            # 서버에 설치된 시스템 드라이버 사용 (버전 충돌 방지)
-            service = Service(system_driver_path)
-            driver = webdriver.Chrome(service=service, options=options)
-            
-        # 2. 로컬 윈도우 (내 컴퓨터)
-        elif os.path.exists("chromedriver.exe"):
+    service = None
+    
+    # [핵심 수정] 서버(Linux)의 드라이버 경로를 1순위로 찾습니다.
+    # Streamlit Cloud는 보통 이 경로들에 드라이버가 있습니다.
+    linux_paths = [
+        "/usr/bin/chromedriver",
+        "/usr/bin/chromium-driver",
+        "/usr/lib/chromium-browser/chromedriver"
+    ]
+    
+    for path in linux_paths:
+        if os.path.exists(path):
+            service = Service(path)
+            break
+
+    # 서버 경로에 없으면 로컬(Windows) 확인
+    if service is None:
+        if os.path.exists("chromedriver.exe"):
             service = Service("chromedriver.exe")
-            driver = webdriver.Chrome(service=service, options=options)
-            
-        # 3. 그 외 (자동 설치 시도)
         else:
-            service = Service(ChromeDriverManager().install())
+            # 정말 없으면 그때서야 다운로드 시도 (로컬용)
+            try:
+                service = Service(ChromeDriverManager().install())
+            except:
+                pass
+
+    try:
+        if service:
             driver = webdriver.Chrome(service=service, options=options)
-            
+        else:
+            return "🚨 크롬 드라이버를 찾을 수 없습니다."
     except Exception as e:
-        return f"🚨 드라이버 오류 발생: {e}"
+        return f"🚨 드라이버 실행 오류: {e}"
 
     wait = WebDriverWait(driver, 20)
     
