@@ -8,8 +8,11 @@ import random
 import requests
 import shutil 
 
-st.set_page_config(page_title="AI 맛집 랭킹 (Cloud Fix)", page_icon="☁️", layout="wide")
+# 화면 설정
+st.set_page_config(page_title="AI 맛집 랭킹 (Cloud Fix 2)", page_icon="☁️", layout="wide")
 
+from streamlit_folium import st_folium
+import folium
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -19,7 +22,9 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# ... (1. 도구 설정 및 RecommendationEngine 클래스는 이전과 동일하므로 생략하지 않고 전체 코드 제공) ...
+# ==========================================
+# 1. 도구 설정
+# ==========================================
 
 def get_lat_lon(address):
     VWORLD_API_KEY = "05B55DB4-5776-37FB-B555-BE393DE47184" 
@@ -31,13 +36,13 @@ def get_lat_lon(address):
             "crs": "epsg:4326", "address": clean_addr, "refine": "true",
             "simple": "false", "format": "json", "type": "ROAD", "key": VWORLD_API_KEY
         }
-        response = requests.get(url, params=params, timeout=2)
+        response = requests.get(url, params=params, timeout=3)
         data = response.json()
         if data['response']['status'] == 'OK':
             return float(data['response']['result']['point']['y']), float(data['response']['result']['point']['x'])
         else:
             params['type'] = 'PARCEL'
-            response = requests.get(url, params=params, timeout=2)
+            response = requests.get(url, params=params, timeout=3)
             data = response.json()
             if data['response']['status'] == 'OK':
                 return float(data['response']['result']['point']['y']), float(data['response']['result']['point']['x'])
@@ -77,6 +82,10 @@ class RecommendationEngine:
         matched_tags = list(set(matched_tags))
         return final_score, matched_tags, total_reviews
 
+# ==========================================
+# 2. 데이터 수집기 (로딩 대기 강화)
+# ==========================================
+
 def clean_menu_text(name_raw, price_raw):
     price = re.sub(r"[^0-9,]", "", price_raw) + "원"
     name = name_raw
@@ -95,28 +104,26 @@ def collect_data_to_csv(location, category, max_items):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    # [수정] 화면 크기를 확실하게 키움 (반응형 숨김 방지)
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
 
-    service = None
-    linux_paths = ["/usr/bin/chromedriver", "/usr/bin/chromium-driver", "/usr/lib/chromium-browser/chromedriver"]
-    for path in linux_paths:
-        if os.path.exists(path):
-            service = Service(path)
-            break
-    if service is None:
-        if os.path.exists("chromedriver.exe"): service = Service("chromedriver.exe")
-        else:
-            try: service = Service(ChromeDriverManager().install())
-            except: pass
-
     try:
-        if service: driver = webdriver.Chrome(service=service, options=options)
-        else: return "🚨 크롬 드라이버를 찾을 수 없습니다."
-    except Exception as e: return f"🚨 드라이버 실행 오류: {e}"
+        system_driver_path = shutil.which("chromium-driver") or shutil.which("chromedriver")
+        if system_driver_path and "/usr/bin" in system_driver_path:
+            service = Service(system_driver_path)
+            driver = webdriver.Chrome(service=service, options=options)
+        elif os.path.exists("chromedriver.exe"):
+            service = Service("chromedriver.exe")
+            driver = webdriver.Chrome(service=service, options=options)
+        else:
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        return f"🚨 드라이버 오류: {e}"
 
     wait = WebDriverWait(driver, 20)
     
@@ -140,7 +147,7 @@ def collect_data_to_csv(location, category, max_items):
                 time.sleep(random.uniform(0.05, 0.1))
             time.sleep(0.5)
             search_box.send_keys(Keys.ENTER)
-            st.toast("검색어 입력 완료...", icon="🔍")
+            st.toast("검색 중...", icon="🔍")
             time.sleep(3) 
         except Exception as e: return f"❌ 검색 오류: {e}"
 
@@ -155,8 +162,9 @@ def collect_data_to_csv(location, category, max_items):
                 break
             except: time.sleep(2)
         
-        if not frame_found: return "❌ 목록을 찾을 수 없습니다."
+        if not frame_found: return "❌ 목록 로딩 실패"
 
+        # 스크롤
         for _ in range(int(max_items / 5) + 2):
             driver.execute_script("window.scrollBy(0, 10000);")
             time.sleep(0.5)
@@ -171,19 +179,12 @@ def collect_data_to_csv(location, category, max_items):
             if collected_count >= max_items: break
             progress_bar.progress(min((collected_count + 1) / max_items, 1.0))
             
-            # 1. 데이터 저장용 그릇 미리 준비 (실패해도 이거라도 저장하려고)
+            # 그릇 준비
             item_data = {
-                "name": "알수없음",
-                "category": "음식점",
-                "visitor_reviews": 0,
-                "blog_reviews": 0,
-                "address": location,
-                "hours": "정보 없음",
-                "parking": "정보 없음",
-                "menus": "메뉴 정보 없음",
-                "tags": "",
-                "lat": None,
-                "lon": None
+                "name": "알수없음", "category": "음식점", "visitor_reviews": 0,
+                "blog_reviews": 0, "address": location, "hours": "정보 없음",
+                "parking": "정보 없음", "menus": "메뉴 정보 없음", "tags": "",
+                "lat": None, "lon": None
             }
 
             try:
@@ -204,32 +205,38 @@ def collect_data_to_csv(location, category, max_items):
 
                 name = click_target.text
                 item_data["name"] = name
-                status_text.text(f"탐색 중 ({collected_count+1}/{max_items}): {name}")
+                status_text.text(f"수집 중 ({collected_count+1}/{max_items}): {name}")
                 
+                # 클릭
                 driver.execute_script("arguments[0].scrollIntoView(true);", click_target)
-                time.sleep(0.3)
+                time.sleep(0.5)
                 driver.execute_script("arguments[0].click();", click_target)
-                time.sleep(1.5) 
+                time.sleep(2) # 클라우드는 느리니까 2초 대기
                 
-                # 상세 페이지 진입 시도
                 driver.switch_to.default_content()
+                
                 try:
+                    # [핵심] 상세 프레임이 뜰 때까지 확실히 기다림
                     wait.until(EC.presence_of_element_located((By.ID, "entryIframe")))
                     driver.switch_to.frame("entryIframe")
                     
-                    # --- 여기서부터는 실패해도 무시하고(pass) 넘어갑니다 ---
+                    # [핵심] 상세 내용(제목)이 뜰 때까지 한번 더 기다림 (빈 화면 방지)
+                    try:
+                        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".LnJFt")))
+                    except:
+                        pass # 제목 로딩 실패해도 소스는 긁어봄
+
+                    # 데이터 긁기
                     page_source = driver.page_source
                     
+                    # 리뷰 (유연하게 찾기)
                     try:
-                        v_match = re.search(r"방문자 리뷰\s*<[^>]+>\s*([\d,]+)", page_source)
-                        if not v_match: v_match = re.search(r"방문자 리뷰\s*([\d,]+)", page_source)
-                        if v_match: item_data["visitor_reviews"] = int(v_match.group(1).replace(",", ""))
-                    except: pass
-
-                    try:
-                        b_match = re.search(r"블로그 리뷰\s*<[^>]+>\s*([\d,]+)", page_source)
-                        if not b_match: b_match = re.search(r"블로그 리뷰\s*([\d,]+)", page_source)
-                        if b_match: item_data["blog_reviews"] = int(b_match.group(1).replace(",", ""))
+                        # 숫자만 뽑아내는 정규식 강화
+                        nums = re.findall(r"방문자 리뷰.*?(\d{1,3}(?:,\d{3})*)", page_source)
+                        if nums: item_data["visitor_reviews"] = int(nums[0].replace(",", ""))
+                        
+                        nums_blog = re.findall(r"블로그 리뷰.*?(\d{1,3}(?:,\d{3})*)", page_source)
+                        if nums_blog: item_data["blog_reviews"] = int(nums_blog[0].replace(",", ""))
                     except: pass
                     
                     try: 
@@ -238,8 +245,9 @@ def collect_data_to_csv(location, category, max_items):
                     except: pass
                     
                     try:
-                        a_match = re.search(r"<span class=\"LDgIH\">([^<]+)</span>", page_source)
-                        if a_match: item_data["address"] = a_match.group(1)
+                        # 주소 찾기 강화
+                        a_elem = driver.find_elements(By.CSS_SELECTOR, ".LDgIH")
+                        if a_elem: item_data["address"] = a_elem[0].text
                     except: pass
                     
                     try: item_data["hours"] = driver.find_element(By.CSS_SELECTOR, ".U7pYf").text
@@ -247,12 +255,11 @@ def collect_data_to_csv(location, category, max_items):
                     
                     try:
                         body_text = driver.find_element(By.TAG_NAME, "body").text
-                        if "주차 가능" in body_text or "주차가능" in body_text: item_data["parking"] = "✅ 주차 가능"
+                        if "주차 가능" in body_text: item_data["parking"] = "✅ 주차 가능"
                         elif "주차 불가" in body_text: item_data["parking"] = "❌ 주차 불가"
-                        elif "발렛" in body_text: item_data["parking"] = "🚗 발렛/주차 가능"
-                        elif "주차" in body_text: item_data["parking"] = "✅ 주차 가능"
                     except: pass
 
+                    # 메뉴
                     try:
                         m_names = driver.find_elements(By.CSS_SELECTOR, ".lPzHi")
                         m_prices = driver.find_elements(By.CSS_SELECTOR, ".GXS1X")
@@ -261,23 +268,15 @@ def collect_data_to_csv(location, category, max_items):
                             for k in range(min(len(m_names), len(m_prices), 5)):
                                 extracted.append(clean_menu_text(m_names[k].text, m_prices[k].text))
                         if not extracted:
+                            # 탭 클릭 백업
                             menu_tab = driver.find_elements(By.XPATH, "//span[text()='메뉴']")
                             if menu_tab:
                                 driver.execute_script("arguments[0].click();", menu_tab[0])
-                                time.sleep(0.5)
+                                time.sleep(1)
                                 m_names = driver.find_elements(By.CSS_SELECTOR, ".lPzHi")
                                 m_prices = driver.find_elements(By.CSS_SELECTOR, ".GXS1X")
-                                if m_names and m_prices:
-                                    for k in range(min(len(m_names), len(m_prices), 5)):
-                                        extracted.append(clean_menu_text(m_names[k].text, m_prices[k].text))
-                        if not extracted:
-                            body_txt = driver.find_element(By.TAG_NAME, "body").text
-                            lines = body_txt.split('\n')
-                            for k, line in enumerate(lines):
-                                if re.search(r"^\d{1,3}(,\d{3})*원$", line.strip()):
-                                    if k > 0 and len(lines[k-1]) < 20:
-                                        extracted.append(clean_menu_text(lines[k-1], line))
-                                    if len(extracted) >= 3: break
+                                for k in range(min(len(m_names), len(m_prices), 5)):
+                                    extracted.append(clean_menu_text(m_names[k].text, m_prices[k].text))
                         if extracted: item_data["menus"] = " | ".join(extracted)
                     except: pass
 
@@ -286,20 +285,15 @@ def collect_data_to_csv(location, category, max_items):
                         if t_matches: item_data["tags"] = ", ".join(t_matches[:5])
                     except: pass
                     
+                    # 좌표는 나중에 변환
                     item_data["lat"], item_data["lon"] = get_lat_lon(item_data["address"])
 
-                except:
-                    # 상세 페이지 진입 실패해도 목록에서 얻은 이름으로 저장
-                    pass
+                except: pass
                 
-                # [성공] 어떤 경우에도 리스트에 추가하고 카운트 올림
                 data_list.append(item_data)
                 collected_count += 1
-                status_text.text(f"✅ 저장 완료 ({collected_count}/{max_items}): {item_data['name']}")
                 
-            except Exception: 
-                # 클릭조차 실패한 경우만 건너뜀
-                pass
+            except Exception: pass
             
     except Exception as e: return f"🚨 에러 발생: {e}"
     finally:
@@ -326,7 +320,7 @@ with st.sidebar:
     c_qty = st.slider("수집 개수", 10, 50, 10)
     if st.button("📥 데이터 수집 시작", type="primary"):
         if os.path.exists("my_restaurants.csv"): os.remove("my_restaurants.csv")
-        with st.spinner("서버에서 수집 중입니다..."):
+        with st.spinner("서버에서 수집 중입니다... (잠시만 기다려주세요)"):
             msg = collect_data_to_csv(c_loc, c_cat, c_qty)
             if "성공" in msg:
                 st.success(msg)
@@ -361,7 +355,6 @@ else:
 
         df['min_price'] = df['menus'].apply(get_min_price)
 
-        # --- 필터 ---
         st.markdown("### 🔍 필터 & 정렬")
         col_sort, col_type, col_opt = st.columns([1.5, 1.5, 1])
         with col_sort:
