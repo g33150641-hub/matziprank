@@ -8,7 +8,6 @@ import random
 import requests
 import shutil 
 
-# 화면 설정
 st.set_page_config(page_title="AI 맛집 랭킹 (Cloud Fix)", page_icon="☁️", layout="wide")
 
 from selenium import webdriver
@@ -20,9 +19,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# ==========================================
-# 1. 도구 설정
-# ==========================================
+# ... (1. 도구 설정 및 RecommendationEngine 클래스는 이전과 동일하므로 생략하지 않고 전체 코드 제공) ...
 
 def get_lat_lon(address):
     VWORLD_API_KEY = "05B55DB4-5776-37FB-B555-BE393DE47184" 
@@ -79,10 +76,6 @@ class RecommendationEngine:
         final_score = int(base_score + match_score)
         matched_tags = list(set(matched_tags))
         return final_score, matched_tags, total_reviews
-
-# ==========================================
-# 2. 데이터 수집기 (수집 성공률 강화)
-# ==========================================
 
 def clean_menu_text(name_raw, price_raw):
     price = re.sub(r"[^0-9,]", "", price_raw) + "원"
@@ -178,12 +171,25 @@ def collect_data_to_csv(location, category, max_items):
             if collected_count >= max_items: break
             progress_bar.progress(min((collected_count + 1) / max_items, 1.0))
             
-            # [핵심 수정] 루프 시작할 때마다 프레임 확실히 초기화
-            driver.switch_to.default_content()
-            driver.switch_to.frame("searchIframe")
+            # 1. 데이터 저장용 그릇 미리 준비 (실패해도 이거라도 저장하려고)
+            item_data = {
+                "name": "알수없음",
+                "category": "음식점",
+                "visitor_reviews": 0,
+                "blog_reviews": 0,
+                "address": location,
+                "hours": "정보 없음",
+                "parking": "정보 없음",
+                "menus": "메뉴 정보 없음",
+                "tags": "",
+                "lat": None,
+                "lon": None
+            }
 
-            name = "알수없음" # 초기값
             try:
+                driver.switch_to.default_content()
+                driver.switch_to.frame("searchIframe")
+                
                 stores = driver.find_elements(By.CSS_SELECTOR, ".UEzoS")
                 if not stores: stores = driver.find_elements(By.CSS_SELECTOR, ".place_bluelink")
                 store_container = stores[i]
@@ -197,109 +203,103 @@ def collect_data_to_csv(location, category, max_items):
                     except: click_target = store_container
 
                 name = click_target.text
-                status_text.text(f"탐색 중... ({collected_count+1}/{max_items}): {name}")
+                item_data["name"] = name
+                status_text.text(f"탐색 중 ({collected_count+1}/{max_items}): {name}")
                 
                 driver.execute_script("arguments[0].scrollIntoView(true);", click_target)
                 time.sleep(0.3)
                 driver.execute_script("arguments[0].click();", click_target)
                 time.sleep(1.5) 
                 
+                # 상세 페이지 진입 시도
                 driver.switch_to.default_content()
-                
-                # 상세 프레임 진입 (실패하면 다음 루프로)
                 try:
                     wait.until(EC.presence_of_element_located((By.ID, "entryIframe")))
                     driver.switch_to.frame("entryIframe")
+                    
+                    # --- 여기서부터는 실패해도 무시하고(pass) 넘어갑니다 ---
+                    page_source = driver.page_source
+                    
+                    try:
+                        v_match = re.search(r"방문자 리뷰\s*<[^>]+>\s*([\d,]+)", page_source)
+                        if not v_match: v_match = re.search(r"방문자 리뷰\s*([\d,]+)", page_source)
+                        if v_match: item_data["visitor_reviews"] = int(v_match.group(1).replace(",", ""))
+                    except: pass
+
+                    try:
+                        b_match = re.search(r"블로그 리뷰\s*<[^>]+>\s*([\d,]+)", page_source)
+                        if not b_match: b_match = re.search(r"블로그 리뷰\s*([\d,]+)", page_source)
+                        if b_match: item_data["blog_reviews"] = int(b_match.group(1).replace(",", ""))
+                    except: pass
+                    
+                    try: 
+                        c_match = re.search(r"<span class=\"LnJFt\">([^<]+)</span>", page_source)
+                        if c_match: item_data["category"] = c_match.group(1)
+                    except: pass
+                    
+                    try:
+                        a_match = re.search(r"<span class=\"LDgIH\">([^<]+)</span>", page_source)
+                        if a_match: item_data["address"] = a_match.group(1)
+                    except: pass
+                    
+                    try: item_data["hours"] = driver.find_element(By.CSS_SELECTOR, ".U7pYf").text
+                    except: pass
+                    
+                    try:
+                        body_text = driver.find_element(By.TAG_NAME, "body").text
+                        if "주차 가능" in body_text or "주차가능" in body_text: item_data["parking"] = "✅ 주차 가능"
+                        elif "주차 불가" in body_text: item_data["parking"] = "❌ 주차 불가"
+                        elif "발렛" in body_text: item_data["parking"] = "🚗 발렛/주차 가능"
+                        elif "주차" in body_text: item_data["parking"] = "✅ 주차 가능"
+                    except: pass
+
+                    try:
+                        m_names = driver.find_elements(By.CSS_SELECTOR, ".lPzHi")
+                        m_prices = driver.find_elements(By.CSS_SELECTOR, ".GXS1X")
+                        extracted = []
+                        if m_names and m_prices:
+                            for k in range(min(len(m_names), len(m_prices), 5)):
+                                extracted.append(clean_menu_text(m_names[k].text, m_prices[k].text))
+                        if not extracted:
+                            menu_tab = driver.find_elements(By.XPATH, "//span[text()='메뉴']")
+                            if menu_tab:
+                                driver.execute_script("arguments[0].click();", menu_tab[0])
+                                time.sleep(0.5)
+                                m_names = driver.find_elements(By.CSS_SELECTOR, ".lPzHi")
+                                m_prices = driver.find_elements(By.CSS_SELECTOR, ".GXS1X")
+                                if m_names and m_prices:
+                                    for k in range(min(len(m_names), len(m_prices), 5)):
+                                        extracted.append(clean_menu_text(m_names[k].text, m_prices[k].text))
+                        if not extracted:
+                            body_txt = driver.find_element(By.TAG_NAME, "body").text
+                            lines = body_txt.split('\n')
+                            for k, line in enumerate(lines):
+                                if re.search(r"^\d{1,3}(,\d{3})*원$", line.strip()):
+                                    if k > 0 and len(lines[k-1]) < 20:
+                                        extracted.append(clean_menu_text(lines[k-1], line))
+                                    if len(extracted) >= 3: break
+                        if extracted: item_data["menus"] = " | ".join(extracted)
+                    except: pass
+
+                    try:
+                        t_matches = re.findall(r"<span class=\"Tfd3t\">([^<]+)</span>", page_source)
+                        if t_matches: item_data["tags"] = ", ".join(t_matches[:5])
+                    except: pass
+                    
+                    item_data["lat"], item_data["lon"] = get_lat_lon(item_data["address"])
+
                 except:
-                    continue
+                    # 상세 페이지 진입 실패해도 목록에서 얻은 이름으로 저장
+                    pass
                 
-                # [안전 장치] 데이터 하나라도 에러나면 전체 스킵하지 말고, 기본값 넣기
-                page_source = driver.page_source
-                
-                visitor_cnt = 0
-                try:
-                    v_match = re.search(r"방문자 리뷰\s*<[^>]+>\s*([\d,]+)", page_source)
-                    if not v_match: v_match = re.search(r"방문자 리뷰\s*([\d,]+)", page_source)
-                    if v_match: visitor_cnt = int(v_match.group(1).replace(",", ""))
-                except: pass
-
-                blog_cnt = 0
-                try:
-                    b_match = re.search(r"블로그 리뷰\s*<[^>]+>\s*([\d,]+)", page_source)
-                    if not b_match: b_match = re.search(r"블로그 리뷰\s*([\d,]+)", page_source)
-                    if b_match: blog_cnt = int(b_match.group(1).replace(",", ""))
-                except: pass
-                
-                category_name = "음식점"
-                try: 
-                    c_match = re.search(r"<span class=\"LnJFt\">([^<]+)</span>", page_source)
-                    if c_match: category_name = c_match.group(1)
-                except: pass
-                
-                address = location
-                try:
-                    a_match = re.search(r"<span class=\"LDgIH\">([^<]+)</span>", page_source)
-                    if a_match: address = a_match.group(1)
-                except: pass
-                
-                hours = "정보 없음"
-                try: hours = driver.find_element(By.CSS_SELECTOR, ".U7pYf").text
-                except: pass
-                
-                parking = "정보 없음"
-                try:
-                    body_text = driver.find_element(By.TAG_NAME, "body").text
-                    if "주차 가능" in body_text or "주차가능" in body_text: parking = "✅ 주차 가능"
-                    elif "주차 불가" in body_text: parking = "❌ 주차 불가"
-                    elif "발렛" in body_text: parking = "🚗 발렛/주차 가능"
-                    elif "주차" in body_text: parking = "✅ 주차 가능"
-                except: pass
-
-                menu_str = "메뉴 정보 없음"
-                try:
-                    m_names = driver.find_elements(By.CSS_SELECTOR, ".lPzHi")
-                    m_prices = driver.find_elements(By.CSS_SELECTOR, ".GXS1X")
-                    extracted = []
-                    if m_names and m_prices:
-                        for k in range(min(len(m_names), len(m_prices), 5)):
-                            extracted.append(clean_menu_text(m_names[k].text, m_prices[k].text))
-                    if not extracted:
-                        menu_tab = driver.find_elements(By.XPATH, "//span[text()='메뉴']")
-                        if menu_tab:
-                            driver.execute_script("arguments[0].click();", menu_tab[0])
-                            time.sleep(0.5)
-                            m_names = driver.find_elements(By.CSS_SELECTOR, ".lPzHi")
-                            m_prices = driver.find_elements(By.CSS_SELECTOR, ".GXS1X")
-                            if m_names and m_prices:
-                                for k in range(min(len(m_names), len(m_prices), 5)):
-                                    extracted.append(clean_menu_text(m_names[k].text, m_prices[k].text))
-                    if extracted: menu_str = " | ".join(extracted)
-                except: pass
-
-                tags = []
-                try:
-                    t_matches = re.findall(r"<span class=\"Tfd3t\">([^<]+)</span>", page_source)
-                    if t_matches: tags = t_matches[:5]
-                except: pass
-                
-                lat, lon = get_lat_lon(address)
-                
-                data_list.append({
-                    "name": name,
-                    "category": category_name,
-                    "visitor_reviews": visitor_cnt,
-                    "blog_reviews": blog_cnt,
-                    "address": address,
-                    "hours": hours,
-                    "parking": parking,
-                    "menus": menu_str,
-                    "tags": ", ".join(tags),
-                    "lat": lat, "lon": lon
-                })
+                # [성공] 어떤 경우에도 리스트에 추가하고 카운트 올림
+                data_list.append(item_data)
                 collected_count += 1
-                status_text.text(f"✅ 수집 성공 ({collected_count}/{max_items}): {name}")
+                status_text.text(f"✅ 저장 완료 ({collected_count}/{max_items}): {item_data['name']}")
                 
-            except Exception: pass
+            except Exception: 
+                # 클릭조차 실패한 경우만 건너뜀
+                pass
             
     except Exception as e: return f"🚨 에러 발생: {e}"
     finally:
@@ -326,7 +326,7 @@ with st.sidebar:
     c_qty = st.slider("수집 개수", 10, 50, 10)
     if st.button("📥 데이터 수집 시작", type="primary"):
         if os.path.exists("my_restaurants.csv"): os.remove("my_restaurants.csv")
-        with st.spinner("서버에서 수집 중입니다... (잠시만 기다려주세요)"):
+        with st.spinner("서버에서 수집 중입니다..."):
             msg = collect_data_to_csv(c_loc, c_cat, c_qty)
             if "성공" in msg:
                 st.success(msg)
@@ -419,40 +419,4 @@ else:
                 c1, c2 = st.columns([3, 1])
                 with c1:
                     title_md = f"### {emoji} {item['name']}"
-                    if "영업중" in item['status']: status_badge = f":green[[{item['status']}]]"
-                    elif "영업종료" in item['status']: status_badge = f":red[[{item['status']}]]"
-                    else: status_badge = f":orange[[{item['status']}]]"
-                    st.markdown(f"{title_md} &nbsp; {status_badge}")
-                    
-                    parking_info = item.get('parking', '정보 없음')
-                    if "가능" in parking_info: st.caption(f"🅿️ {parking_info}")
-                    
-                    if pd.notnull(item['menus']) and item['menus'] != "메뉴 정보 없음":
-                        menu_list = item['menus'].split(" | ")
-                        first_menu = menu_list[0]
-                        extra_count = len(menu_list) - 1
-                        if extra_count > 0: st.markdown(f"**🍱 대표메뉴:** {first_menu} (외 {extra_count}개)")
-                        else: st.markdown(f"**🍱 대표메뉴:** {first_menu}")
-                    else: st.caption("🍱 메뉴 정보 없음")
-                    
-                    if item['match_reason']:
-                        st.caption(f"💡 추천: {', '.join(item['match_reason'])}")
-
-                with c2:
-                    st.metric("총 리뷰", f"{item['total_reviews']}", f"블로그 {item['blog_reviews']}")
-                
-                with st.expander("📍 상세 정보 & 전체 메뉴 보기"):
-                    if pd.notnull(item['menus']) and item['menus'] != "메뉴 정보 없음":
-                        st.markdown("#### 📜 전체 메뉴판")
-                        for m in item['menus'].split(" | "):
-                            st.write(f"- {m}")
-                        st.markdown("---")
-                    st.write(f"**주소:** {item['address']}")
-                    st.write(f"**영업시간:** {item['hours']}")
-                    st.write(f"**주차:** {item.get('parking', '정보 없음')}")
-                    st.write(f"**카테고리:** {item['category']}")
-                    if pd.notnull(item['tags']):
-                        st.info(f"태그: {item['tags']}")
-
-    except Exception as e:
-        st.error(f"데이터 파일 읽기 오류: {e}")
+                    if "영업중" in
