@@ -5,14 +5,11 @@ import os
 import math
 import re
 import random
-import requests
-import shutil 
+import shutil
 
 # 화면 설정
-st.set_page_config(page_title="AI 맛집 랭킹 (Cloud Fix)", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="AI 맛집 랭킹 (Speed)", page_icon="⚡", layout="wide")
 
-from streamlit_folium import st_folium
-import folium
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -23,32 +20,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # ==========================================
-# 1. 도구 설정
+# 1. 추천 엔진
 # ==========================================
-
-def get_lat_lon(address):
-    VWORLD_API_KEY = "05B55DB4-5776-37FB-B555-BE393DE47184" 
-    try:
-        clean_addr = address.split("(")[0].strip()
-        url = "http://api.vworld.kr/req/address?"
-        params = {
-            "service": "address", "request": "getcoord", "version": "2.0",
-            "crs": "epsg:4326", "address": clean_addr, "refine": "true",
-            "simple": "false", "format": "json", "type": "ROAD", "key": VWORLD_API_KEY
-        }
-        response = requests.get(url, params=params, timeout=3)
-        data = response.json()
-        if data['response']['status'] == 'OK':
-            return float(data['response']['result']['point']['y']), float(data['response']['result']['point']['x'])
-        else:
-            params['type'] = 'PARCEL'
-            response = requests.get(url, params=params, timeout=3)
-            data = response.json()
-            if data['response']['status'] == 'OK':
-                return float(data['response']['result']['point']['y']), float(data['response']['result']['point']['x'])
-    except: return None, None
-    return None, None
-
 class RecommendationEngine:
     def __init__(self):
         self.priority_keywords = {
@@ -83,7 +56,7 @@ class RecommendationEngine:
         return final_score, matched_tags, total_reviews
 
 # ==========================================
-# 2. 데이터 수집기 (드라이버 경로 강제 지정)
+# 2. 데이터 수집기 (지도 기능 제거 -> 속도 UP)
 # ==========================================
 
 def clean_menu_text(name_raw, price_raw):
@@ -100,7 +73,7 @@ def clean_menu_text(name_raw, price_raw):
 
 def collect_data_to_csv(location, category, max_items):
     options = Options()
-    # [클라우드 필수 설정]
+    # [클라우드 최적화]
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -109,44 +82,26 @@ def collect_data_to_csv(location, category, max_items):
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     
+    # 이미지 차단
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
 
-    service = None
-    
-    # [핵심 수정] 서버(Linux)의 드라이버 경로를 1순위로 찾습니다.
-    # Streamlit Cloud는 보통 이 경로들에 드라이버가 있습니다.
-    linux_paths = [
-        "/usr/bin/chromedriver",
-        "/usr/bin/chromium-driver",
-        "/usr/lib/chromium-browser/chromedriver"
-    ]
-    
-    for path in linux_paths:
-        if os.path.exists(path):
-            service = Service(path)
-            break
-
-    # 서버 경로에 없으면 로컬(Windows) 확인
-    if service is None:
-        if os.path.exists("chromedriver.exe"):
-            service = Service("chromedriver.exe")
-        else:
-            # 정말 없으면 그때서야 다운로드 시도 (로컬용)
-            try:
-                service = Service(ChromeDriverManager().install())
-            except:
-                pass
-
+    # 드라이버 설정 (서버/로컬 자동 감지)
     try:
-        if service:
+        system_driver_path = shutil.which("chromium-driver") or shutil.which("chromedriver")
+        if system_driver_path and "/usr/bin" in system_driver_path:
+            service = Service(system_driver_path)
+            driver = webdriver.Chrome(service=service, options=options)
+        elif os.path.exists("chromedriver.exe"):
+            service = Service("chromedriver.exe")
             driver = webdriver.Chrome(service=service, options=options)
         else:
-            return "🚨 크롬 드라이버를 찾을 수 없습니다."
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
     except Exception as e:
-        return f"🚨 드라이버 실행 오류: {e}"
+        return f"🚨 드라이버 오류 발생: {e}"
 
-    wait = WebDriverWait(driver, 20)
+    wait = WebDriverWait(driver, 15) # 대기시간 조금 단축
     
     status_text = st.empty()
     progress_bar = st.progress(0)
@@ -155,7 +110,7 @@ def collect_data_to_csv(location, category, max_items):
     try:
         driver.get("https://map.naver.com/")
         st.toast("서버에서 지도 접속 중...", icon="☁️")
-        time.sleep(2)
+        time.sleep(1.5)
 
         try:
             search_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".input_search")))
@@ -169,7 +124,7 @@ def collect_data_to_csv(location, category, max_items):
             time.sleep(0.5)
             search_box.send_keys(Keys.ENTER)
             st.toast("검색 중...", icon="🔍")
-            time.sleep(3) 
+            time.sleep(2.5) 
         except Exception as e:
             return f"❌ 검색 오류: {e}"
 
@@ -186,8 +141,9 @@ def collect_data_to_csv(location, category, max_items):
                 time.sleep(2)
         
         if not frame_found:
-            return "❌ 목록을 찾을 수 없습니다. (서버 차단 또는 로딩 실패)"
+            return "❌ 목록을 찾을 수 없습니다."
 
+        # 스크롤
         for _ in range(int(max_items / 5) + 2):
             driver.execute_script("window.scrollBy(0, 10000);")
             time.sleep(0.5)
@@ -221,7 +177,7 @@ def collect_data_to_csv(location, category, max_items):
                 driver.execute_script("arguments[0].scrollIntoView(true);", click_target)
                 time.sleep(0.3)
                 driver.execute_script("arguments[0].click();", click_target)
-                time.sleep(1.5) 
+                time.sleep(1.0) # 대기 시간 단축
                 
                 driver.switch_to.default_content()
                 
@@ -299,7 +255,7 @@ def collect_data_to_csv(location, category, max_items):
                 t_matches = re.findall(r"<span class=\"Tfd3t\">([^<]+)</span>", page_source)
                 if t_matches: tags = t_matches[:5]
                 
-                lat, lon = get_lat_lon(address)
+                # 좌표 변환 로직 제거됨 (속도 향상)
                 
                 data_list.append({
                     "name": name,
@@ -310,8 +266,7 @@ def collect_data_to_csv(location, category, max_items):
                     "hours": hours,
                     "parking": parking,
                     "menus": menu_str,
-                    "tags": ", ".join(tags),
-                    "lat": lat, "lon": lon
+                    "tags": ", ".join(tags)
                 })
                 collected_count += 1
                 
@@ -344,7 +299,7 @@ with st.sidebar:
     c_qty = st.slider("수집 개수", 10, 50, 10)
     if st.button("📥 데이터 수집 시작", type="primary"):
         if os.path.exists("my_restaurants.csv"): os.remove("my_restaurants.csv")
-        with st.spinner("서버에서 수집 중입니다... (잠시만 기다려주세요)"):
+        with st.spinner("서버에서 빠르게 수집 중입니다..."):
             msg = collect_data_to_csv(c_loc, c_cat, c_qty)
             if "성공" in msg:
                 st.success(msg)
@@ -399,29 +354,11 @@ else:
 
         st.caption(f"검색 결과: {len(df)}개")
         
-        map_data = df[df['lat'].notnull() & df['lon'].notnull()]
-        if not map_data.empty:
-            with st.expander("🗺️ 지도로 위치 보기 (클릭)", expanded=True):
-                avg_lat = map_data['lat'].mean()
-                avg_lon = map_data['lon'].mean()
-                m = folium.Map(location=[avg_lat, avg_lon], zoom_start=13)
-                for _, item in map_data.iterrows():
-                    color = "blue" if "영업중" in item['status'] else "red"
-                    icon = "coffee" if "카페" in item['category'] or "커피" in item['category'] else "cutlery"
-                    folium.Marker(
-                        [item['lat'], item['lon']],
-                        popup=f"<b>{item['name']}</b><br>{item['status']}",
-                        tooltip=item['name'],
-                        icon=folium.Icon(color=color, icon=icon, prefix='fa')
-                    ).add_to(m)
-                st_folium(m, width="100%", height=400)
-        
         st.divider()
 
         engine = RecommendationEngine()
         results = []
         for index, row in df.iterrows():
-            # 중요: 우선순위 UI가 없으므로 '맛 (기본)'을 고정값으로 사용
             score, matched_tags, total = engine.calculate_score(row, "맛 (기본)")
             item = row.to_dict()
             item['final_score'] = score
