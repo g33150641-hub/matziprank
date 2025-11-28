@@ -419,4 +419,40 @@ else:
                 c1, c2 = st.columns([3, 1])
                 with c1:
                     title_md = f"### {emoji} {item['name']}"
-                    if "영업중" in
+                    if "영업중" in item['status']: status_badge = f":green[[{item['status']}]]"
+                    elif "영업종료" in item['status']: status_badge = f":red[[{item['status']}]]"
+                    else: status_badge = f":orange[[{item['status']}]]"
+                    st.markdown(f"{title_md} &nbsp; {status_badge}")
+                    
+                    parking_info = item.get('parking', '정보 없음')
+                    if "가능" in parking_info: st.caption(f"🅿️ {parking_info}")
+                    
+                    if pd.notnull(item['menus']) and item['menus'] != "메뉴 정보 없음":
+                        menu_list = item['menus'].split(" | ")
+                        first_menu = menu_list[0]
+                        extra_count = len(menu_list) - 1
+                        if extra_count > 0: st.markdown(f"**🍱 대표메뉴:** {first_menu} (외 {extra_count}개)")
+                        else: st.markdown(f"**🍱 대표메뉴:** {first_menu}")
+                    else: st.caption("🍱 메뉴 정보 없음")
+                    
+                    if item['match_reason']:
+                        st.caption(f"💡 추천: {', '.join(item['match_reason'])}")
+
+                with c2:
+                    st.metric("총 리뷰", f"{item['total_reviews']}", f"블로그 {item['blog_reviews']}")
+                
+                with st.expander("📍 상세 정보 & 전체 메뉴 보기"):
+                    if pd.notnull(item['menus']) and item['menus'] != "메뉴 정보 없음":
+                        st.markdown("#### 📜 전체 메뉴판")
+                        for m in item['menus'].split(" | "):
+                            st.write(f"- {m}")
+                        st.markdown("---")
+                    st.write(f"**주소:** {item['address']}")
+                    st.write(f"**영업시간:** {item['hours']}")
+                    st.write(f"**주차:** {item.get('parking', '정보 없음')}")
+                    st.write(f"**카테고리:** {item['category']}")
+                    if pd.notnull(item['tags']):
+                        st.info(f"태그: {item['tags']}")
+
+    except Exception as e:
+        st.error(f"데이터 파일 읽기 오류: {e}")
